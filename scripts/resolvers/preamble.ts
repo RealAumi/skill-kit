@@ -54,11 +54,19 @@ _SESSION_ID="$$-$(date +%s)"
 echo "TELEMETRY: \${_TEL:-off}"
 echo "TEL_PROMPTED: $_TEL_PROMPTED"
 mkdir -p ~/.skill-kit/analytics
+_SK_VERSION=$(cat ${ctx.paths.skillRoot}/VERSION 2>/dev/null || cat ${ctx.paths.localSkillRoot}/VERSION 2>/dev/null || echo "unknown")
+printf '{"skill":"%s","ts":"%s","session_id":"%s","version":"%s"}\n' \\
+  "${ctx.skillName}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_SESSION_ID" "$_SK_VERSION" \\
+  > ~/.skill-kit/analytics/.pending-"$_SESSION_ID" 2>/dev/null || true
+for _PF in $(find ~/.skill-kit/analytics -maxdepth 1 -name '.pending-*' 2>/dev/null); do
+  [ -f "$_PF" ] && ${ctx.paths.binDir}/sk-telemetry-log --event-type skill_run --skill _pending_finalize --outcome unknown --session-id "$_SESSION_ID" 2>/dev/null || true
+  break
+done
 \`\`\``;
 }
 
 export function generateUpgradeCheck(ctx: TemplateContext): string {
-  return `If output shows \`UPGRADE_AVAILABLE <old> <new>\`: tell the user a new version is available and ask if they want to upgrade. If \`JUST_UPGRADED <from> <to>\`: tell user "Running skill-kit v{to} (just updated!)" and continue.
+  return `If output shows \`UPGRADE_AVAILABLE <old> <new>\`: read \`${ctx.paths.skillRoot}/upgrade/SKILL.md\` and follow the \`sk-upgrade\` skill flow. If \`JUST_UPGRADED <from> <to>\`: tell user "Running skill-kit v{to} (just updated!)" and continue.
 
 If \`PROACTIVE\` is \`"false"\`, do not proactively suggest skills. Only run skills the user explicitly types.`;
 }

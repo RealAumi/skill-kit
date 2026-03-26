@@ -1,79 +1,132 @@
 #!/usr/bin/env bash
-# sk-telemetry-log — Append a telemetry event to local JSONL.
+# sk-telemetry-log — append a telemetry event to local JSONL.
 #
 # Data flow:
-#   skill preamble → sk-telemetry-log → skill-usage.jsonl
+#   preamble (start) ──▶ .pending marker
+#   epilogue         ──▶ sk-telemetry-log ──▶ skill-usage.jsonl
+#                                            └──▶ sk-telemetry-sync (bg)
 #
-# Usage:
-#   sk-telemetry-log --skill qa --duration 142 --outcome success \
-#     --session-id "12345-1710756600"
-#
-# Privacy tiers:
-#   off       — no logging at all (default)
-#   anonymous — log usage, no installation_id
-#   community — full logging with installation_id for trend tracking
-#
-# NOTE: Uses set -uo pipefail (no -e) — telemetry must never exit non-zero
+# NOTE: Uses set -uo pipefail (no -e) — telemetry must never exit non-zero.
 set -uo pipefail
 
 SKILLKIT_DIR="${SKILLKIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+SOURCE_SKILLKIT_DIR="$(cd "$(dirname "$0")/.." && pwd -P)"
 STATE_DIR="${SKILLKIT_STATE_DIR:-$HOME/.skill-kit}"
 ANALYTICS_DIR="$STATE_DIR/analytics"
 JSONL_FILE="$ANALYTICS_DIR/skill-usage.jsonl"
-CONFIG_CMD="$SKILLKIT_DIR/bin/sk-config"
+PENDING_DIR="$ANALYTICS_DIR"
+CONFIG_CMD="$SOURCE_SKILLKIT_DIR/bin/sk-config"
 VERSION_FILE="$SKILLKIT_DIR/VERSION"
 
-# ── Parse flags ─────────────────────────────────────────────
 SKILL=""
 DURATION=""
 OUTCOME="unknown"
 SESSION_ID=""
 EVENT_TYPE="skill_run"
+ERROR_CLASS=""
+FAILED_STEP=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --skill)       SKILL="$2"; shift 2 ;;
-    --duration)    DURATION="$2"; shift 2 ;;
-    --outcome)     OUTCOME="$2"; shift 2 ;;
-    --session-id)  SESSION_ID="$2"; shift 2 ;;
-    --event-type)  EVENT_TYPE="$2"; shift 2 ;;
+    --skill)        SKILL="$2"; shift 2 ;;
+    --duration)     DURATION="$2"; shift 2 ;;
+    --outcome)      OUTCOME="$2"; shift 2 ;;
+    --session-id)   SESSION_ID="$2"; shift 2 ;;
+    --event-type)   EVENT_TYPE="$2"; shift 2 ;;
+    --error-class)  ERROR_CLASS="$2"; shift 2 ;;
+    --failed-step)  FAILED_STEP="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
 
-# ── Read telemetry tier ─────────────────────────────────────
 TIER="$("$CONFIG_CMD" get telemetry 2>/dev/null || true)"
+TIER="${TIER:-off}"
 
-# Default is off — respect user's choice
-case "${TIER:-off}" in
-  off|"") exit 0 ;;
-  anonymous|community) ;;
-  *) exit 0 ;;
+case "$TIER" in
+  off|anonymous|community) ;;
+  *) TIER="off" ;;
 esac
 
-# ── Build event JSON ────────────────────────────────────────
 mkdir -p "$ANALYTICS_DIR"
 
-VERSION=$(cat "$VERSION_FILE" 2>/dev/null || echo "unknown")
-TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-ARCH=$(uname -m)
+finalize_pending_markers() {
+  for pending_file in "$PENDING_DIR"/.pending-*; do
+    [ -f "$pending_file" ] || continue
 
-# Installation ID (only for community tier)
+    pending_name="$(basename "$pending_file")"
+    pending_session="${pending_name#.pending-}"
+    [ "$pending_session" = "$SESSION_ID" ] && continue
+
+    pending_data="$(cat "$pending_file" 2>/dev/null || true)"
+    rm -f "$pending_file" 2>/dev/null || true
+    [ -n "$pending_data" ] || continue
+
+    pending_skill="$(echo "$pending_data" | grep -o '"skill":"[^"]*"' | head -1 | awk -F'"' '{print $4}')"
+    pending_ts="$(echo "$pending_data" | grep -o '"ts":"[^"]*"' | head -1 | awk -F'"' '{print $4}')"
+    pending_sid="$(echo "$pending_data" | grep -o '"session_id":"[^"]*"' | head -1 | awk -F'"' '{print $4}')"
+    pending_version="$(echo "$pending_data" | grep -o '"version":"[^"]*"' | head -1 | awk -F'"' '{print $4}')"
+
+    printf '{"v":1,"ts":"%s","event_type":"skill_run","skill":"%s","session_id":"%s","version":"%s","os":"%s","arch":"%s","duration_s":null,"outcome":"unknown","error_class":null,"failed_step":null,"installation_id":null,"_repo":"%s","_branch":"%s"}\n' \
+      "${pending_ts:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" \
+      "${pending_skill:-unknown}" \
+      "${pending_sid:-unknown}" \
+      "${pending_version:-unknown}" \
+      "$(uname -s | tr '[:upper:]' '[:lower:]')" \
+      "$(uname -m)" \
+      "$(basename "$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null || echo "unknown")" \
+      "$(git branch --show-current 2>/dev/null || echo "unknown")" \
+      >> "$JSONL_FILE" 2>/dev/null || true
+  done
+}
+
+finalize_pending_markers
+[ -n "$SESSION_ID" ] && rm -f "$PENDING_DIR/.pending-$SESSION_ID" 2>/dev/null || true
+
+if [ "$TIER" = "off" ]; then
+  exit 0
+fi
+
+VERSION="$(cat "$VERSION_FILE" 2>/dev/null || echo "unknown")"
+TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+ARCH="$(uname -m)"
+
 INSTALL_ID=""
 if [ "$TIER" = "community" ]; then
   ID_FILE="$STATE_DIR/.installation-id"
   if [ -f "$ID_FILE" ]; then
-    INSTALL_ID=$(cat "$ID_FILE")
+    INSTALL_ID="$(cat "$ID_FILE")"
   else
-    INSTALL_ID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "unknown")
+    INSTALL_ID="$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "unknown")"
     echo "$INSTALL_ID" > "$ID_FILE"
   fi
 fi
 
-# Local-only fields (never synced remotely)
-REPO=$(basename "$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null || echo "unknown")
-BRANCH=$(git branch --show-current 2>/dev/null || echo "unknown")
+REPO="$(basename "$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null || echo "unknown")"
+BRANCH="$(git branch --show-current 2>/dev/null || echo "unknown")"
 
-# Append to JSONL (atomic-ish: single echo)
-echo "{\"v\":1,\"ts\":\"$TS\",\"event_type\":\"$EVENT_TYPE\",\"skill\":\"$SKILL\",\"session_id\":\"$SESSION_ID\",\"version\":\"$VERSION\",\"os\":\"$OS\",\"arch\":\"$ARCH\",\"duration_s\":${DURATION:-0},\"outcome\":\"$OUTCOME\",\"installation_id\":\"$INSTALL_ID\",\"_repo\":\"$REPO\",\"_branch\":\"$BRANCH\"}" >> "$JSONL_FILE" 2>/dev/null || true
+if [ -n "$DURATION" ] && [ "$DURATION" -gt 86400 ] 2>/dev/null; then
+  DURATION=""
+fi
+if [ -n "$DURATION" ] && [ "$DURATION" -lt 0 ] 2>/dev/null; then
+  DURATION=""
+fi
+
+DURATION_FIELD="null"
+[ -n "$DURATION" ] && DURATION_FIELD="$DURATION"
+
+ERROR_CLASS_FIELD="null"
+[ -n "$ERROR_CLASS" ] && ERROR_CLASS_FIELD="\"$ERROR_CLASS\""
+
+FAILED_STEP_FIELD="null"
+[ -n "$FAILED_STEP" ] && FAILED_STEP_FIELD="\"$(echo "$FAILED_STEP" | head -c 120 | sed 's/"/\\"/g')\""
+
+INSTALL_FIELD="null"
+[ -n "$INSTALL_ID" ] && INSTALL_FIELD="\"$INSTALL_ID\""
+
+printf '{"v":1,"ts":"%s","event_type":"%s","skill":"%s","session_id":"%s","version":"%s","os":"%s","arch":"%s","duration_s":%s,"outcome":"%s","error_class":%s,"failed_step":%s,"installation_id":%s,"_repo":"%s","_branch":"%s"}\n' \
+  "$TS" "$EVENT_TYPE" "$SKILL" "$SESSION_ID" "$VERSION" "$OS" "$ARCH" \
+  "$DURATION_FIELD" "$OUTCOME" "$ERROR_CLASS_FIELD" "$FAILED_STEP_FIELD" \
+  "$INSTALL_FIELD" "$REPO" "$BRANCH" >> "$JSONL_FILE" 2>/dev/null || true
+
+"$SOURCE_SKILLKIT_DIR/bin/sk-telemetry-sync" &>/dev/null &

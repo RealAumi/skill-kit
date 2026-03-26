@@ -17,6 +17,8 @@ export const RESOLVERS: Record<string, (ctx: TemplateContext) => string> = {
   PREAMBLE: generatePreamble,
   UPGRADE_CHECK: generateUpgradeCheck,
   TELEMETRY_PROMPT: generateTelemetryPrompt,
+  BIN_DIR: (ctx) => ctx.paths.binDir,
+  UPGRADE_COMMAND: (ctx) => `${ctx.paths.binDir}/sk-upgrade`,
 
   // ── Git Utilities ──────────────────────────────────────────
   BASE_BRANCH_DETECT: (ctx) => `## Detect base branch

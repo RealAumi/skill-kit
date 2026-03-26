@@ -6,6 +6,8 @@
   "scripts": {
     "gen:skill-docs": "bun run scripts/gen-skill-docs.ts",
     "gen:skill-docs:dry": "bun run scripts/gen-skill-docs.ts --dry-run",
+    "gen:skill-docs:codex": "bun run scripts/gen-skill-docs.ts --host codex",
+    "gen:skill-docs:dry:codex": "bun run scripts/gen-skill-docs.ts --host codex --dry-run",
     "skill:check": "bun run scripts/skill-check.ts",
     "test": "bun test",
     "analytics": "bin/sk-analytics"

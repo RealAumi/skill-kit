@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+# sk-upgrade — update skill-kit to the latest available version.
+set -euo pipefail
+
+SKILLKIT_DIR="${SKILLKIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+SOURCE_SKILLKIT_DIR="$(cd "$(dirname "$0")/.." && pwd -P)"
+STATE_DIR="${SKILLKIT_STATE_DIR:-$HOME/.skill-kit}"
+UPDATE_CMD="$SOURCE_SKILLKIT_DIR/bin/sk-update-check"
+ORIGIN_URL_FILE="$SOURCE_SKILLKIT_DIR/.skill-kit-origin-url"
+ORIGIN_BRANCH_FILE="$SOURCE_SKILLKIT_DIR/.skill-kit-origin-branch"
+
+detect_origin_url() {
+  git -C "$SOURCE_SKILLKIT_DIR" remote get-url origin 2>/dev/null || cat "$ORIGIN_URL_FILE" 2>/dev/null || true
+}
+
+detect_origin_branch() {
+  local branch
+  branch="$(git -C "$SOURCE_SKILLKIT_DIR" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')"
+  [ -n "$branch" ] || branch="$(git -C "$SOURCE_SKILLKIT_DIR" remote show origin 2>/dev/null | awk '/HEAD branch/ {print $NF}')"
+  [ -n "$branch" ] || branch="$(cat "$ORIGIN_BRANCH_FILE" 2>/dev/null || true)"
+  [ -n "$branch" ] || branch="main"
+  echo "$branch"
+}
+
+persist_origin_metadata() {
+  local origin_url origin_branch
+  origin_url="$(detect_origin_url)"
+  [ -n "$origin_url" ] || return 0
+  origin_branch="$(detect_origin_branch)"
+  printf '%s\n' "$origin_url" > "$ORIGIN_URL_FILE"
+  printf '%s\n' "$origin_branch" > "$ORIGIN_BRANCH_FILE"
+}
+
+is_git_install() {
+  [ "$(git -C "$SOURCE_SKILLKIT_DIR" rev-parse --show-toplevel 2>/dev/null || true)" = "$SOURCE_SKILLKIT_DIR" ]
+}
+
+infer_setup_args() {
+  if [ "$SKILLKIT_DIR" = "$HOME/.codex/skills/skill-kit" ]; then
+    echo "--host codex"
+    return
+  fi
+
+  if [ "$SKILLKIT_DIR" = "$SOURCE_SKILLKIT_DIR/.agents/skills/skill-kit" ]; then
+    echo "--host codex --local"
+    return
+  fi
+
+  if [ "$SOURCE_SKILLKIT_DIR" = "$HOME/.claude/skills/skill-kit" ]; then
+    echo "--host claude"
+    return
+  fi
+
+  case "$SOURCE_SKILLKIT_DIR" in
+    */.claude/skills/skill-kit)
+      echo "--host claude --local"
+      ;;
+    */.agents/skills/skill-kit)
+      echo "--host codex --local"
+      ;;
+    *)
+      echo "--host auto"
+      ;;
+  esac
+}
+
+show_whats_new() {
+  local old_version="$1"
+  local new_version="$2"
+  local changelog="$SOURCE_SKILLKIT_DIR/CHANGELOG.md"
+
+  echo ""
+  echo "skill-kit v$new_version - upgraded from v$old_version"
+  echo ""
+  echo "What's new:"
+
+  if [ -f "$changelog" ]; then
+    awk -v new_ver="$new_version" -v old_ver="$old_version" '
+      /^## / {
+        if (capture && index($0, old_ver)) exit
+        if (index($0, new_ver)) capture=1
+      }
+      capture { print }
+    ' "$changelog" | sed '1d'
+  elif is_git_install; then
+    git -C "$SOURCE_SKILLKIT_DIR" log --oneline --no-merges -5
+  else
+    echo "- Upgrade complete."
+  fi
+
+  echo ""
+}
+
+CHECK_OUTPUT="$("$UPDATE_CMD" --force 2>/dev/null || true)"
+case "$CHECK_OUTPUT" in
+  UPGRADE_AVAILABLE\ *)
+    OLD_VERSION="$(echo "$CHECK_OUTPUT" | awk '{print $2}')"
+    REMOTE_VERSION="$(echo "$CHECK_OUTPUT" | awk '{print $3}')"
+    ;;
+  "")
+    CURRENT_VERSION="$(cat "$SKILLKIT_DIR/VERSION" 2>/dev/null || echo "unknown")"
+    echo "skill-kit is already up to date (v$CURRENT_VERSION)."
+    exit 0
+    ;;
+  *)
+    OLD_VERSION="$(cat "$SKILLKIT_DIR/VERSION" 2>/dev/null || echo "unknown")"
+    REMOTE_VERSION="$OLD_VERSION"
+    ;;
+esac
+
+SETUP_ARGS="$(infer_setup_args)"
+
+if is_git_install; then
+  INSTALL_TYPE="git"
+else
+  INSTALL_TYPE="vendored"
+fi
+
+echo "Upgrading skill-kit ($INSTALL_TYPE install)..."
+
+if [ "$INSTALL_TYPE" = "git" ]; then
+  DEFAULT_BRANCH="$(detect_origin_branch)"
+  if [ -n "$(git -C "$SOURCE_SKILLKIT_DIR" status --porcelain 2>/dev/null)" ]; then
+    git -C "$SOURCE_SKILLKIT_DIR" stash push -u -m "sk-upgrade $(date +%s)" >/dev/null 2>&1 || true
+    echo "Local changes were stashed before upgrading."
+  fi
+
+  git -C "$SOURCE_SKILLKIT_DIR" fetch origin "$DEFAULT_BRANCH" >/dev/null
+  git -C "$SOURCE_SKILLKIT_DIR" reset --hard "origin/$DEFAULT_BRANCH" >/dev/null
+else
+  ORIGIN_URL="$(detect_origin_url)"
+  DEFAULT_BRANCH="$(detect_origin_branch)"
+  [ -n "$ORIGIN_URL" ] || {
+    echo "Could not determine the install source for this vendored copy." >&2
+    echo "Set .skill-kit-origin-url or reinstall from git first." >&2
+    exit 1
+  }
+
+  TMP_DIR="$(mktemp -d)"
+  NEW_DIR="$TMP_DIR/skill-kit"
+  BACKUP_DIR="$SOURCE_SKILLKIT_DIR.bak"
+  PARENT_DIR="$(dirname "$SOURCE_SKILLKIT_DIR")"
+
+  git clone --depth 1 --branch "$DEFAULT_BRANCH" "$ORIGIN_URL" "$NEW_DIR" >/dev/null
+  rm -rf "$NEW_DIR/.git"
+
+  cd "$PARENT_DIR"
+  rm -rf "$BACKUP_DIR"
+  mv "$SOURCE_SKILLKIT_DIR" "$BACKUP_DIR"
+  mv "$NEW_DIR" "$SOURCE_SKILLKIT_DIR"
+fi
+
+persist_origin_metadata
+
+if ! (cd "$SOURCE_SKILLKIT_DIR" && ./setup $SETUP_ARGS >/dev/null); then
+  if [ "$INSTALL_TYPE" = "vendored" ] && [ -d "${SOURCE_SKILLKIT_DIR}.bak" ]; then
+    rm -rf "$SOURCE_SKILLKIT_DIR"
+    mv "${SOURCE_SKILLKIT_DIR}.bak" "$SOURCE_SKILLKIT_DIR"
+  fi
+  echo "Upgrade failed during setup." >&2
+  exit 1
+fi
+
+if [ "$INSTALL_TYPE" = "vendored" ] && [ -d "${SOURCE_SKILLKIT_DIR}.bak" ]; then
+  rm -rf "${SOURCE_SKILLKIT_DIR}.bak"
+fi
+
+[ -n "${TMP_DIR:-}" ] && rm -rf "$TMP_DIR"
+
+NEW_VERSION="$(cat "$SKILLKIT_DIR/VERSION" 2>/dev/null || cat "$SOURCE_SKILLKIT_DIR/VERSION" 2>/dev/null || echo "$REMOTE_VERSION")"
+mkdir -p "$STATE_DIR"
+printf '%s\n' "$OLD_VERSION" > "$STATE_DIR/just-upgraded-from"
+rm -f "$STATE_DIR/last-update-check" "$STATE_DIR/update-snoozed"
+
+show_whats_new "$OLD_VERSION" "$NEW_VERSION"

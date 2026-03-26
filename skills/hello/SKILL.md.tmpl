@@ -15,6 +15,8 @@ allowed-tools:
 
 {{UPGRADE_CHECK}}
 
+{{TELEMETRY_PROMPT}}
+
 # Hello Skill
 
 You are running the `/hello` example skill from skill-kit.
@@ -32,7 +34,7 @@ Show them the current environment:
 ```bash
 echo "Skill: hello"
 echo "Framework: skill-kit"
-echo "Version: $(cat ~/.claude/skills/skill-kit/VERSION 2>/dev/null || echo 'unknown')"
+echo "Version: $(cat ~/.claude/skills/skill-kit/VERSION 2>/dev/null || cat .claude/skills/skill-kit/VERSION 2>/dev/null || cat \"$SKILLKIT_ROOT/VERSION\" 2>/dev/null || cat .agents/skills/skill-kit/VERSION 2>/dev/null || echo 'unknown')"
 echo "Working directory: $(pwd)"
 echo "Git branch: $(git branch --show-current 2>/dev/null || echo 'not a git repo')"
 ```

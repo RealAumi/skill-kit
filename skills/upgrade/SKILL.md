@@ -1,18 +1,14 @@
 ---
-name: review-lite
-preamble-tier: 2
+name: upgrade
+preamble-tier: 1
 version: 1.0.0
 description: |
-  Lightweight pre-commit code review. Analyzes staged or branch diff for
-  common issues: TODO/FIXME left behind, console.log statements, large files,
-  missing error handling. Use when asked to "review", "check my code", or
-  "pre-commit review".
-  Proactively suggest when the user is about to commit or push.
+  Upgrade skill-kit to the latest version. Wraps the sk-upgrade CLI, handles
+  snoozing and auto-upgrade config, and summarizes what's new. Use when asked
+  to "upgrade skill-kit", "update skill-kit", or "get the latest skill-kit".
 allowed-tools:
   - Bash
   - Read
-  - Grep
-  - Glob
   - AskUserQuestion
 ---
 
@@ -46,7 +42,7 @@ mkdir -p ~/.skill-kit/analytics
 _SK_VERSION=$(cat ~/.claude/skills/skill-kit/VERSION 2>/dev/null || cat .claude/skills/skill-kit/VERSION 2>/dev/null || echo "unknown")
 printf '{"skill":"%s","ts":"%s","session_id":"%s","version":"%s"}
 ' \
-  "review-lite" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_SESSION_ID" "$_SK_VERSION" \
+  "upgrade" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_SESSION_ID" "$_SK_VERSION" \
   > ~/.skill-kit/analytics/.pending-"$_SESSION_ID" 2>/dev/null || true
 for _PF in $(find ~/.skill-kit/analytics -maxdepth 1 -name '.pending-*' 2>/dev/null); do
   [ -f "$_PF" ] && ~/.claude/skills/skill-kit/bin/sk-telemetry-log --event-type skill_run --skill _pending_finalize --outcome unknown --session-id "$_SESSION_ID" 2>/dev/null || true
@@ -76,79 +72,88 @@ Then run:
 touch ~/.skill-kit/.telemetry-prompted
 ```
 
-## Detect base branch
+# Skill-Kit Upgrade
+
+You are running the `/upgrade` skill, a wrapper around `sk-upgrade`.
+
+## Inline upgrade flow
+
+This section is referenced by every skill preamble when it sees `UPGRADE_AVAILABLE <old> <new>`.
+
+### Step 1: Ask the user (or auto-upgrade)
+
+First, check whether auto-upgrade is enabled:
 
 ```bash
-# Auto-detect base branch (main, master, or default)
-_BASE=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')
-[ -z "$_BASE" ] && _BASE=$(git remote show origin 2>/dev/null | awk '/HEAD branch/ {print $NF}')
-[ -z "$_BASE" ] && _BASE="main"
-echo "BASE_BRANCH: $_BASE"
+_AUTO=""
+[ "${SKILLKIT_AUTO_UPGRADE:-}" = "1" ] && _AUTO="true"
+[ -z "$_AUTO" ] && _AUTO=$(~/.claude/skills/skill-kit/bin/sk-config get auto_upgrade 2>/dev/null || true)
+echo "AUTO_UPGRADE=$_AUTO"
 ```
 
-# Lightweight Code Review
+If `AUTO_UPGRADE=true` or `AUTO_UPGRADE=1`, skip AskUserQuestion and run `~/.claude/skills/skill-kit/bin/sk-upgrade`.
 
-You are running the `/review-lite` skill. Analyze the current diff for common issues before commit.
+Otherwise, use AskUserQuestion:
+- Question: "skill-kit **v{new}** is available (you're on v{old}). Upgrade now?"
+- Options: ["Yes, upgrade now", "Always keep me up to date", "Not now", "Never ask again"]
 
----
+If "Yes, upgrade now": run `~/.claude/skills/skill-kit/bin/sk-upgrade`.
 
-## Step 1: Get the diff
+If "Always keep me up to date":
 
 ```bash
-# Prefer staged changes, fall back to branch diff
-STAGED=$(git diff --cached --stat 2>/dev/null)
-if [ -n "$STAGED" ]; then
-  echo "MODE: staged"
-  git diff --cached --name-only
-else
-  echo "MODE: branch"
-  git diff "origin/$_BASE"...HEAD --name-only 2>/dev/null || git diff HEAD~1 --name-only 2>/dev/null
+~/.claude/skills/skill-kit/bin/sk-config set auto_upgrade true
+```
+
+Tell the user auto-upgrade is enabled, then run `~/.claude/skills/skill-kit/bin/sk-upgrade`.
+
+If "Not now": write snooze state with escalating backoff, then continue with the current skill.
+
+```bash
+_SNOOZE_FILE=~/.skill-kit/update-snoozed
+_REMOTE_VER="{new}"
+_CUR_LEVEL=0
+if [ -f "$_SNOOZE_FILE" ]; then
+  _SNOOZED_VER=$(awk '{print $1}' "$_SNOOZE_FILE")
+  if [ "$_SNOOZED_VER" = "$_REMOTE_VER" ]; then
+    _CUR_LEVEL=$(awk '{print $2}' "$_SNOOZE_FILE")
+    case "$_CUR_LEVEL" in *[!0-9]*) _CUR_LEVEL=0 ;; esac
+  fi
 fi
+_NEW_LEVEL=$((_CUR_LEVEL + 1))
+[ "$_NEW_LEVEL" -gt 3 ] && _NEW_LEVEL=3
+echo "$_REMOTE_VER $_NEW_LEVEL $(date +%s)" > "$_SNOOZE_FILE"
 ```
 
-If no changes found, tell the user and stop.
+Tell the user the next reminder will be in 24h, 48h, or 1 week depending on the snooze level.
 
----
+If "Never ask again":
 
-## Step 2: Scan for issues
-
-For each changed file, check:
-
-### Red flags (must fix)
-- [ ] **Secrets**: API keys, tokens, passwords in code (`grep -rn "password\|secret\|api_key\|token"`)
-- [ ] **Debug code**: `console.log`, `debugger`, `print(` left in production code
-- [ ] **Conflict markers**: `<<<<<<<`, `=======`, `>>>>>>>`
-
-### Yellow flags (should review)
-- [ ] **TODOs**: `TODO`, `FIXME`, `HACK`, `XXX` — are these intentional?
-- [ ] **Large files**: Any file > 500 lines changed? Consider splitting
-- [ ] **Missing tests**: If source files changed, did test files change too?
-
-### Info
-- [ ] **New dependencies**: Check if `package.json`, `requirements.txt`, `go.mod` changed
-- [ ] **Config changes**: `.env`, `docker-compose`, CI config modified?
-
----
-
-## Step 3: Report
-
-Present findings as a checklist:
-
-```
-Review Summary
-━━━━━━━━━━━━━
-Files changed: N
-Red flags:     N (must fix before commit)
-Yellow flags:  N (worth reviewing)
-Info:          N (awareness only)
-
-Details:
-  🔴 path/to/file.ts:42 — console.log left in production code
-  🟡 path/to/module.ts — 650 lines, consider splitting
-  ℹ️  package.json — new dependency: lodash@4.17.21
+```bash
+~/.claude/skills/skill-kit/bin/sk-config set update_check false
 ```
 
-If there are red flags, suggest fixes. If clean, tell the user they're good to commit.
+Tell the user update checks are disabled, then continue with the current skill.
+
+### Step 2: Run the upgrade
+
+Run:
+
+```bash
+~/.claude/skills/skill-kit/bin/sk-upgrade
+```
+
+If the command exits non-zero, tell the user the upgrade failed and include the relevant stderr summary.
+
+### Step 3: Continue
+
+After `sk-upgrade` finishes, summarize the new version and changelog output, then continue with the original task.
+
+## Standalone usage
+
+When the user directly invokes `/upgrade`, run `~/.claude/skills/skill-kit/bin/sk-upgrade`.
+
+If it reports the install is already current, tell the user they are already on the latest version. Otherwise summarize the upgrade result and what's new.
 
 ## Epilogue (run at the very end)
 
@@ -156,7 +161,7 @@ If there are red flags, suggest fixes. If clean, tell the user they're good to c
 _TEL_END=$(date +%s)
 _DURATION=$((_TEL_END - _TEL_START))
 ~/.claude/skills/skill-kit/bin/sk-telemetry-log \
-  --skill "review-lite" \
+  --skill "upgrade" \
   --duration "$_DURATION" \
   --outcome "success" \
   --session-id "$_SESSION_ID" 2>/dev/null || true

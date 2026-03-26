@@ -36,6 +36,23 @@ const HOST: Host = (() => {
   throw new Error(`Unknown host: ${val}. Use claude or codex.`);
 })();
 
+function outputPathForHost(tmpl: string, defaultOutput: string, host: Host): string {
+  if (host === 'claude') return defaultOutput;
+
+  const normalized = tmpl.split(path.sep).join('/');
+  if (normalized === 'SKILL.md.tmpl') {
+    return `.agents/skills/${path.basename(ROOT)}/SKILL.md`;
+  }
+
+  const parts = normalized.split('/');
+  const skillDir = parts.at(-2);
+  if (!skillDir) {
+    throw new Error(`Cannot determine Codex output path for template: ${tmpl}`);
+  }
+
+  return `.agents/skills/${skillDir}/SKILL.md`;
+}
+
 // ─── Frontmatter Parser ─────────────────────────────────────
 
 function parseFrontmatter(content: string): { frontmatter: SkillFrontmatter; body: string } {
@@ -105,7 +122,8 @@ console.log(`\n  skill-kit gen-skill-docs (host: ${HOST}, ${DRY_RUN ? 'dry-run' 
 
 for (const { tmpl, output } of templates) {
   const tmplPath = path.join(ROOT, tmpl);
-  const outPath = path.join(ROOT, output);
+  const resolvedOutput = outputPathForHost(tmpl, output, HOST);
+  const outPath = path.join(ROOT, resolvedOutput);
   const raw = fs.readFileSync(tmplPath, 'utf-8');
   const { frontmatter, body } = parseFrontmatter(raw);
 
@@ -150,15 +168,15 @@ for (const { tmpl, output } of templates) {
   if (DRY_RUN) {
     const existing = fs.existsSync(outPath) ? fs.readFileSync(outPath, 'utf-8') : '';
     if (existing !== content) {
-      console.log(`  ✗  ${output} — STALE (${lines} lines)`);
+      console.log(`  ✗  ${resolvedOutput} — STALE (${lines} lines)`);
       stale = true;
     } else {
-      console.log(`  ✓  ${output} — fresh (${lines} lines)`);
+      console.log(`  ✓  ${resolvedOutput} — fresh (${lines} lines)`);
     }
   } else {
     fs.mkdirSync(path.dirname(outPath), { recursive: true });
     fs.writeFileSync(outPath, content);
-    console.log(`  ✓  ${output} — generated (${lines} lines)`);
+    console.log(`  ✓  ${resolvedOutput} — generated (${lines} lines)`);
   }
 }
 

@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# sk-telemetry-sync — Background push of telemetry events to remote endpoint.
+#
+# Data flow:
+#   sk-telemetry-log → skill-usage.jsonl → sk-telemetry-sync → remote endpoint
+#
+# Design (from gstack):
+# - Cursor-based: tracks last synced line, only sends new events
+# - Rate-limited: once per 5 minutes (prevents spam)
+# - Privacy-aware: strips local-only fields (_repo, _branch)
+# - Strips installation_id for anonymous tier
+# - Batches up to 100 events per sync
+# - Silent failures (telemetry must never break workflows)
+#
+# Usage:
+#   sk-telemetry-sync              # Run once (called by sk-telemetry-log)
+#   sk-telemetry-sync --force      # Bypass rate limit
+#
+# Env overrides:
+#   SKILLKIT_STATE_DIR       — override ~/.skill-kit
+#   SKILLKIT_SYNC_URL        — override remote endpoint
+#   SKILLKIT_SYNC_API_KEY    — API key for remote endpoint
+set -uo pipefail
+
+SKILLKIT_DIR="${SKILLKIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+STATE_DIR="${SKILLKIT_STATE_DIR:-$HOME/.skill-kit}"
+ANALYTICS_DIR="$STATE_DIR/analytics"
+JSONL_FILE="$ANALYTICS_DIR/skill-usage.jsonl"
+CURSOR_FILE="$ANALYTICS_DIR/.last-sync-line"
+RATE_FILE="$ANALYTICS_DIR/.last-sync-time"
+CONFIG_CMD="$SKILLKIT_DIR/bin/sk-config"
+
+# ── IMPORTANT: Replace with YOUR telemetry endpoint ──────────
+# Examples:
+#   Supabase edge function: https://your-project.supabase.co/functions/v1/telemetry-ingest
+#   Custom API: https://api.your-domain.com/telemetry
+SYNC_URL="${SKILLKIT_SYNC_URL:-}"
+SYNC_API_KEY="${SKILLKIT_SYNC_API_KEY:-}"
+
+# ── Preflight checks ────────────────────────────────────────
+
+# No endpoint configured → nothing to sync
+[ -z "$SYNC_URL" ] && exit 0
+
+# No data file → nothing to sync
+[ -f "$JSONL_FILE" ] || exit 0
+
+# Check telemetry tier
+TIER="$("$CONFIG_CMD" get telemetry 2>/dev/null || true)"
+case "${TIER:-off}" in
+  off|"") exit 0 ;;
+  anonymous|community) ;;
+  *) exit 0 ;;
+esac
+
+# ── Rate limit (5 minutes) ──────────────────────────────────
+
+if [ "${1:-}" != "--force" ] && [ -f "$RATE_FILE" ]; then
+  LAST_SYNC=$(cat "$RATE_FILE" 2>/dev/null || echo 0)
+  NOW=$(date +%s)
+  ELAPSED=$(( NOW - LAST_SYNC ))
+  [ "$ELAPSED" -lt 300 ] && exit 0
+fi
+
+# ── Read cursor ──────────────────────────────────────────────
+
+CURSOR=$(cat "$CURSOR_FILE" 2>/dev/null || echo 0)
+TOTAL_LINES=$(wc -l < "$JSONL_FILE" | tr -d ' ')
+
+# Nothing new
+[ "$CURSOR" -ge "$TOTAL_LINES" ] && exit 0
+
+# ── Extract unsent events ────────────────────────────────────
+
+# Read new lines (up to 100)
+NEW_LINES=$(tail -n "+$((CURSOR + 1))" "$JSONL_FILE" | head -100)
+[ -z "$NEW_LINES" ] && exit 0
+
+BATCH_SIZE=$(echo "$NEW_LINES" | wc -l | tr -d ' ')
+
+# ── Strip local-only fields ──────────────────────────────────
+# Remove _repo, _branch (privacy: never sent remotely)
+# Remove installation_id for anonymous tier
+
+if [ "$TIER" = "anonymous" ]; then
+  CLEANED=$(echo "$NEW_LINES" | sed \
+    -e 's/,"_repo":"[^"]*"//g' \
+    -e 's/,"_branch":"[^"]*"//g' \
+    -e 's/,"installation_id":"[^"]*"//g')
+else
+  CLEANED=$(echo "$NEW_LINES" | sed \
+    -e 's/,"_repo":"[^"]*"//g' \
+    -e 's/,"_branch":"[^"]*"//g')
+fi
+
+# ── Build JSON array payload ─────────────────────────────────
+# Convert JSONL (one object per line) to JSON array
+
+PAYLOAD="[$(echo "$CLEANED" | paste -sd',' -)]"
+
+# ── Send to remote ───────────────────────────────────────────
+
+HTTP_CODE=$(curl -sf -o /dev/null -w "%{http_code}" \
+  --max-time 10 \
+  -X POST "$SYNC_URL" \
+  -H "Content-Type: application/json" \
+  -H "apikey: $SYNC_API_KEY" \
+  -d "$PAYLOAD" 2>/dev/null) || HTTP_CODE="000"
+
+# ── Update state ─────────────────────────────────────────────
+
+if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+  # Success: advance cursor
+  NEW_CURSOR=$((CURSOR + BATCH_SIZE))
+  echo "$NEW_CURSOR" > "$CURSOR_FILE"
+  date +%s > "$RATE_FILE"
+else
+  # Failure: update rate file to prevent rapid retries, but don't advance cursor
+  date +%s > "$RATE_FILE"
+fi

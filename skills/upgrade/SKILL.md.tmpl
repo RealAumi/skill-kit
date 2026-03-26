@@ -1,0 +1,104 @@
+---
+name: upgrade
+preamble-tier: 1
+version: 1.0.0
+description: |
+  Upgrade skill-kit to the latest version. Wraps the sk-upgrade CLI, handles
+  snoozing and auto-upgrade config, and summarizes what's new. Use when asked
+  to "upgrade skill-kit", "update skill-kit", or "get the latest skill-kit".
+allowed-tools:
+  - Bash
+  - Read
+  - AskUserQuestion
+---
+
+{{PREAMBLE}}
+
+{{UPGRADE_CHECK}}
+
+{{TELEMETRY_PROMPT}}
+
+# Skill-Kit Upgrade
+
+You are running the `/upgrade` skill, a wrapper around `sk-upgrade`.
+
+## Inline upgrade flow
+
+This section is referenced by every skill preamble when it sees `UPGRADE_AVAILABLE <old> <new>`.
+
+### Step 1: Ask the user (or auto-upgrade)
+
+First, check whether auto-upgrade is enabled:
+
+```bash
+_AUTO=""
+[ "${SKILLKIT_AUTO_UPGRADE:-}" = "1" ] && _AUTO="true"
+[ -z "$_AUTO" ] && _AUTO=$({{BIN_DIR}}/sk-config get auto_upgrade 2>/dev/null || true)
+echo "AUTO_UPGRADE=$_AUTO"
+```
+
+If `AUTO_UPGRADE=true` or `AUTO_UPGRADE=1`, skip AskUserQuestion and run `{{UPGRADE_COMMAND}}`.
+
+Otherwise, use AskUserQuestion:
+- Question: "skill-kit **v{new}** is available (you're on v{old}). Upgrade now?"
+- Options: ["Yes, upgrade now", "Always keep me up to date", "Not now", "Never ask again"]
+
+If "Yes, upgrade now": run `{{UPGRADE_COMMAND}}`.
+
+If "Always keep me up to date":
+
+```bash
+{{BIN_DIR}}/sk-config set auto_upgrade true
+```
+
+Tell the user auto-upgrade is enabled, then run `{{UPGRADE_COMMAND}}`.
+
+If "Not now": write snooze state with escalating backoff, then continue with the current skill.
+
+```bash
+_SNOOZE_FILE=~/.skill-kit/update-snoozed
+_REMOTE_VER="{new}"
+_CUR_LEVEL=0
+if [ -f "$_SNOOZE_FILE" ]; then
+  _SNOOZED_VER=$(awk '{print $1}' "$_SNOOZE_FILE")
+  if [ "$_SNOOZED_VER" = "$_REMOTE_VER" ]; then
+    _CUR_LEVEL=$(awk '{print $2}' "$_SNOOZE_FILE")
+    case "$_CUR_LEVEL" in *[!0-9]*) _CUR_LEVEL=0 ;; esac
+  fi
+fi
+_NEW_LEVEL=$((_CUR_LEVEL + 1))
+[ "$_NEW_LEVEL" -gt 3 ] && _NEW_LEVEL=3
+echo "$_REMOTE_VER $_NEW_LEVEL $(date +%s)" > "$_SNOOZE_FILE"
+```
+
+Tell the user the next reminder will be in 24h, 48h, or 1 week depending on the snooze level.
+
+If "Never ask again":
+
+```bash
+{{BIN_DIR}}/sk-config set update_check false
+```
+
+Tell the user update checks are disabled, then continue with the current skill.
+
+### Step 2: Run the upgrade
+
+Run:
+
+```bash
+{{UPGRADE_COMMAND}}
+```
+
+If the command exits non-zero, tell the user the upgrade failed and include the relevant stderr summary.
+
+### Step 3: Continue
+
+After `sk-upgrade` finishes, summarize the new version and changelog output, then continue with the original task.
+
+## Standalone usage
+
+When the user directly invokes `/upgrade`, run `{{UPGRADE_COMMAND}}`.
+
+If it reports the install is already current, tell the user they are already on the latest version. Otherwise summarize the upgrade result and what's new.
+
+{{EPILOGUE}}

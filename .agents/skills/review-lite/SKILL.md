@@ -19,8 +19,12 @@ allowed-tools:
 ## Preamble (run first)
 
 ```bash
+_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
+SKILLKIT_ROOT="$HOME/.codex/skills/skill-kit"
+[ -n "$_ROOT" ] && [ -d "$_ROOT/.agents/skills/skill-kit" ] && SKILLKIT_ROOT="$_ROOT/.agents/skills/skill-kit"
+SKILLKIT_BIN="$SKILLKIT_ROOT/bin"
 # Update check
-_UPD=$(~/.claude/skills/skill-kit/bin/sk-update-check 2>/dev/null || .claude/skills/skill-kit/bin/sk-update-check 2>/dev/null || true)
+_UPD=$($SKILLKIT_BIN/sk-update-check 2>/dev/null || .agents/skills/skill-kit/bin/sk-update-check 2>/dev/null || true)
 [ -n "$_UPD" ] && echo "$_UPD" || true
 
 # Session tracking
@@ -30,31 +34,31 @@ _SESSIONS=$(find ~/.skill-kit/sessions -mmin -120 -type f 2>/dev/null | wc -l | 
 find ~/.skill-kit/sessions -mmin +120 -type f -delete 2>/dev/null || true
 
 # Read config
-_PROACTIVE=$(~/.claude/skills/skill-kit/bin/sk-config get proactive 2>/dev/null || echo "true")
+_PROACTIVE=$($SKILLKIT_BIN/sk-config get proactive 2>/dev/null || echo "true")
 _BRANCH=$(git branch --show-current 2>/dev/null || echo "unknown")
 echo "BRANCH: $_BRANCH"
 echo "PROACTIVE: $_PROACTIVE"
 
 # Telemetry
-_TEL=$(~/.claude/skills/skill-kit/bin/sk-config get telemetry 2>/dev/null || true)
+_TEL=$($SKILLKIT_BIN/sk-config get telemetry 2>/dev/null || true)
 _TEL_PROMPTED=$([ -f ~/.skill-kit/.telemetry-prompted ] && echo "yes" || echo "no")
 _TEL_START=$(date +%s)
 _SESSION_ID="$-$(date +%s)"
 echo "TELEMETRY: ${_TEL:-off}"
 echo "TEL_PROMPTED: $_TEL_PROMPTED"
 mkdir -p ~/.skill-kit/analytics
-_SK_VERSION=$(cat ~/.claude/skills/skill-kit/VERSION 2>/dev/null || cat .claude/skills/skill-kit/VERSION 2>/dev/null || echo "unknown")
+_SK_VERSION=$(cat $SKILLKIT_ROOT/VERSION 2>/dev/null || cat .agents/skills/skill-kit/VERSION 2>/dev/null || echo "unknown")
 printf '{"skill":"%s","ts":"%s","session_id":"%s","version":"%s"}
 ' \
   "review-lite" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_SESSION_ID" "$_SK_VERSION" \
   > ~/.skill-kit/analytics/.pending-"$_SESSION_ID" 2>/dev/null || true
 for _PF in $(find ~/.skill-kit/analytics -maxdepth 1 -name '.pending-*' 2>/dev/null); do
-  [ -f "$_PF" ] && ~/.claude/skills/skill-kit/bin/sk-telemetry-log --event-type skill_run --skill _pending_finalize --outcome unknown --session-id "$_SESSION_ID" 2>/dev/null || true
+  [ -f "$_PF" ] && $SKILLKIT_BIN/sk-telemetry-log --event-type skill_run --skill _pending_finalize --outcome unknown --session-id "$_SESSION_ID" 2>/dev/null || true
   break
 done
 ```
 
-If output shows `UPGRADE_AVAILABLE <old> <new>`: read `~/.claude/skills/skill-kit/upgrade/SKILL.md` and follow the `sk-upgrade` skill flow. If `JUST_UPGRADED <from> <to>`: tell user "Running skill-kit v{to} (just updated!)" and continue.
+If output shows `UPGRADE_AVAILABLE <old> <new>`: read `$SKILLKIT_ROOT/upgrade/SKILL.md` and follow the `sk-upgrade` skill flow. If `JUST_UPGRADED <from> <to>`: tell user "Running skill-kit v{to} (just updated!)" and continue.
 
 If `PROACTIVE` is `"false"`, do not proactively suggest skills. Only run skills the user explicitly types.
 
@@ -72,7 +76,7 @@ Options:
 
 Then run:
 ```bash
-~/.claude/skills/skill-kit/bin/sk-config set telemetry <chosen_tier>
+$SKILLKIT_BIN/sk-config set telemetry <chosen_tier>
 touch ~/.skill-kit/.telemetry-prompted
 ```
 
@@ -155,7 +159,7 @@ If there are red flags, suggest fixes. If clean, tell the user they're good to c
 ```bash
 _TEL_END=$(date +%s)
 _DURATION=$((_TEL_END - _TEL_START))
-~/.claude/skills/skill-kit/bin/sk-telemetry-log \
+$SKILLKIT_BIN/sk-telemetry-log \
   --skill "review-lite" \
   --duration "$_DURATION" \
   --outcome "success" \

@@ -1,28 +1,21 @@
 #!/usr/bin/env bash
-# skill-kit setup — Install skills and create symlinks for Claude Code discovery.
+# skill-kit setup — generate skills and register them with Claude Code / Codex.
 #
 # Usage:
 #   ./setup                  # Install for Claude Code (default)
 #   ./setup --host codex     # Install for Codex CLI
 #   ./setup --host auto      # Auto-detect installed agents
-#   ./setup --local          # Project-scoped install (repo-local)
-#
-# What this script does:
-# 1. Parse arguments
-# 2. Generate SKILL.md from templates (bun run gen:skill-docs)
-# 3. Create symlinks in ~/.claude/skills/ for skill discovery
-# 4. Create state directory (~/.skill-kit/)
-# 5. Show welcome message
-#
-# Design: Skills are discovered by Claude Code via symlinks.
-# Each skill directory (containing SKILL.md) gets its own symlink.
-# This means changes in this repo are immediately visible to Claude.
+#   ./setup --local          # Project-scoped install
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SOURCE_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 FRAMEWORK_NAME="skill-kit"
-
-# ── Parse arguments ──────────────────────────────────────────
+CODEX_SKILLS="$HOME/.codex/skills"
+CODEX_RUNTIME="$CODEX_SKILLS/$FRAMEWORK_NAME"
+AGENTS_DIR="$SOURCE_DIR/.agents/skills"
+ORIGIN_URL_FILE="$SOURCE_DIR/.skill-kit-origin-url"
+ORIGIN_BRANCH_FILE="$SOURCE_DIR/.skill-kit-origin-branch"
 
 HOST="claude"
 LOCAL=false
@@ -45,7 +38,7 @@ while [ $# -gt 0 ]; do
       echo "  --host claude   Install for Claude Code (default)"
       echo "  --host codex    Install for Codex CLI"
       echo "  --host auto     Auto-detect installed agents"
-      echo "  --local         Project-scoped install (repo-local)"
+      echo "  --local         Project-scoped install"
       exit 0
       ;;
     *)
@@ -55,16 +48,13 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# Auto-detect host
 if [ "$HOST" = "auto" ]; then
   if command -v claude >/dev/null 2>&1; then
     HOST="claude"
   elif command -v codex >/dev/null 2>&1; then
     HOST="codex"
   else
-    echo "Error: No supported AI agent found (claude, codex)." >&2
-    echo "Install Claude Code or Codex CLI first." >&2
-    exit 1
+    HOST="claude"
   fi
 fi
 
@@ -72,17 +62,13 @@ echo ""
 echo "  $FRAMEWORK_NAME setup (host: $HOST, $([ "$LOCAL" = true ] && echo 'local' || echo 'global'))"
 echo ""
 
-# ── Step 1: Check Bun ────────────────────────────────────────
-
 if ! command -v bun >/dev/null 2>&1; then
   echo "  ✗  Bun not found. Install: https://bun.sh"
   exit 1
 fi
 echo "  ✓  Bun $(bun --version)"
 
-# ── Step 2: Install dependencies ─────────────────────────────
-
-cd "$SCRIPT_DIR"
+cd "$SOURCE_DIR"
 if [ ! -d node_modules ] || [ package.json -nt node_modules/.package-lock.json 2>/dev/null ]; then
   bun install --frozen-lockfile 2>/dev/null || bun install
   echo "  ✓  Dependencies installed"
@@ -90,61 +76,135 @@ else
   echo "  ✓  Dependencies up to date"
 fi
 
-# ── Step 3: Generate SKILL.md from templates ─────────────────
+detect_origin_url() {
+  git -C "$SOURCE_DIR" remote get-url origin 2>/dev/null || true
+}
 
-bun run gen:skill-docs --host "$HOST" 2>&1 | while IFS= read -r line; do
-  echo "  $line"
-done
+detect_origin_branch() {
+  local branch
+  branch="$(git -C "$SOURCE_DIR" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')"
+  [ -n "$branch" ] || branch="$(git -C "$SOURCE_DIR" remote show origin 2>/dev/null | awk '/HEAD branch/ {print $NF}')"
+  [ -n "$branch" ] || branch="main"
+  echo "$branch"
+}
 
-# ── Step 4: Determine target directory ───────────────────────
+persist_origin_metadata() {
+  local origin_url origin_branch
+  origin_url="$(detect_origin_url)"
+  [ -n "$origin_url" ] || return 0
+  origin_branch="$(detect_origin_branch)"
+  printf '%s\n' "$origin_url" > "$ORIGIN_URL_FILE"
+  printf '%s\n' "$origin_branch" > "$ORIGIN_BRANCH_FILE"
+}
 
-if [ "$LOCAL" = true ]; then
-  REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
-  case "$HOST" in
-    claude) TARGET_DIR="$REPO_ROOT/.claude/skills" ;;
-    codex)  TARGET_DIR="$REPO_ROOT/.agents/skills" ;;
-  esac
-else
-  case "$HOST" in
-    claude) TARGET_DIR="$HOME/.claude/skills" ;;
-    codex)  TARGET_DIR="$HOME/.codex/skills" ;;
-  esac
-fi
+generate_docs() {
+  local host="$1"
+  bun run gen:skill-docs --host "$host" 2>&1 | while IFS= read -r line; do
+    echo "  $line"
+  done
+}
 
-mkdir -p "$TARGET_DIR"
+link_claude_skill_dirs() {
+  local skills_dir="$1"
+  local linked=0
+  mkdir -p "$skills_dir"
 
-# ── Step 5: Create symlinks ─────────────────────────────────
+  local framework_link="$skills_dir/$FRAMEWORK_NAME"
+  [ -L "$framework_link" ] && rm -f "$framework_link"
+  ln -snf "$SOURCE_DIR" "$framework_link"
+  echo "  ✓  Linked $FRAMEWORK_NAME → $SOURCE_DIR"
 
-# Link the framework root
-FRAMEWORK_LINK="$TARGET_DIR/$FRAMEWORK_NAME"
-if [ -L "$FRAMEWORK_LINK" ]; then
-  rm "$FRAMEWORK_LINK"
-fi
-ln -sf "$SCRIPT_DIR" "$FRAMEWORK_LINK"
-echo "  ✓  Linked $FRAMEWORK_NAME → $SCRIPT_DIR"
+  for skill_dir in "$SOURCE_DIR"/skills/*/; do
+    [ -f "$skill_dir/SKILL.md" ] || continue
+    local skill_name link_path
+    skill_name="$(basename "$skill_dir")"
+    link_path="$skills_dir/$skill_name"
+    [ -L "$link_path" ] && rm -f "$link_path"
+    ln -snf "$skill_dir" "$link_path"
+    linked=$((linked + 1))
+  done
 
-# Link each skill directory (containing SKILL.md)
-LINKED=0
-for SKILL_DIR in "$SCRIPT_DIR"/skills/*/; do
-  [ -f "$SKILL_DIR/SKILL.md" ] || continue
-  SKILL_NAME=$(basename "$SKILL_DIR")
-  LINK_PATH="$TARGET_DIR/$SKILL_NAME"
+  echo "  ✓  Linked $linked skill(s) to $skills_dir/"
+}
 
-  if [ -L "$LINK_PATH" ]; then
-    rm "$LINK_PATH"
+create_agents_sidecar() {
+  local runtime_root="$AGENTS_DIR/$FRAMEWORK_NAME"
+  mkdir -p "$runtime_root" "$runtime_root/upgrade"
+
+  ln -snf "$SOURCE_DIR/bin" "$runtime_root/bin"
+  ln -snf "$SOURCE_DIR/VERSION" "$runtime_root/VERSION"
+
+  if [ -f "$AGENTS_DIR/upgrade/SKILL.md" ]; then
+    ln -snf "$AGENTS_DIR/upgrade/SKILL.md" "$runtime_root/upgrade/SKILL.md"
   fi
-  ln -sf "$SKILL_DIR" "$LINK_PATH"
-  LINKED=$((LINKED + 1))
-done
+}
 
-echo "  ✓  Linked $LINKED skill(s) to $TARGET_DIR/"
+create_codex_runtime_root() {
+  local runtime_root="$1"
 
-# ── Step 6: Create state directory ───────────────────────────
+  if [ -L "$runtime_root" ]; then
+    rm -f "$runtime_root"
+  elif [ -d "$runtime_root" ]; then
+    rm -rf "$runtime_root"
+  fi
+
+  mkdir -p "$runtime_root" "$runtime_root/upgrade"
+  ln -snf "$SOURCE_DIR/bin" "$runtime_root/bin"
+  ln -snf "$SOURCE_DIR/VERSION" "$runtime_root/VERSION"
+
+  if [ -f "$AGENTS_DIR/upgrade/SKILL.md" ]; then
+    ln -snf "$AGENTS_DIR/upgrade/SKILL.md" "$runtime_root/upgrade/SKILL.md"
+  fi
+}
+
+link_codex_skill_dirs() {
+  local skills_dir="$1"
+  local linked=0
+  mkdir -p "$skills_dir"
+
+  for skill_dir in "$AGENTS_DIR"/*/; do
+    [ -f "$skill_dir/SKILL.md" ] || continue
+    local skill_name link_path
+    skill_name="$(basename "$skill_dir")"
+    [ "$skill_name" = "$FRAMEWORK_NAME" ] && continue
+    link_path="$skills_dir/$skill_name"
+    if [ -L "$link_path" ] || [ ! -e "$link_path" ]; then
+      ln -snf "$skill_dir" "$link_path"
+      linked=$((linked + 1))
+    fi
+  done
+
+  echo "  ✓  Linked $linked Codex skill(s) to $skills_dir/"
+}
+
+persist_origin_metadata
+generate_docs "$HOST"
 
 STATE_DIR="$HOME/.skill-kit"
 mkdir -p "$STATE_DIR/analytics" "$STATE_DIR/sessions"
 
-# ── Step 7: Welcome message ──────────────────────────────────
+if [ "$HOST" = "claude" ]; then
+  if [ "$LOCAL" = true ]; then
+    REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+    TARGET_DIR="$REPO_ROOT/.claude/skills"
+  else
+    TARGET_DIR="$HOME/.claude/skills"
+  fi
+
+  link_claude_skill_dirs "$TARGET_DIR"
+else
+  create_agents_sidecar
+
+  if [ "$LOCAL" = true ]; then
+    echo "  ✓  Generated Codex artifacts in $AGENTS_DIR/"
+    echo "  ✓  Runtime root ready at $AGENTS_DIR/$FRAMEWORK_NAME/"
+  else
+    mkdir -p "$CODEX_SKILLS"
+    create_codex_runtime_root "$CODEX_RUNTIME"
+    link_codex_skill_dirs "$CODEX_SKILLS"
+    echo "  ✓  Runtime root ready at $CODEX_RUNTIME/"
+  fi
+fi
 
 FIRST_RUN=false
 if [ ! -f "$STATE_DIR/.setup-complete" ]; then
@@ -158,16 +218,15 @@ if [ "$FIRST_RUN" = true ]; then
   echo "  │  Welcome to $FRAMEWORK_NAME!                  │"
   echo "  │                                        │"
   echo "  │  Your skills are ready. Try:           │"
-  echo "  │    /hello  — a minimal example skill   │"
+  echo "  │    /hello  - a minimal example skill   │"
+  echo "  │    /upgrade - upgrade the framework    │"
   echo "  │                                        │"
-  echo "  │  Add your own:                         │"
-  echo "  │    1. Create skills/my-skill/          │"
-  echo "  │    2. Add SKILL.md.tmpl                │"
-  echo "  │    3. Run ./setup                      │"
+  echo "  │  Keep current anytime with:            │"
+  echo "  │    bin/sk-upgrade                      │"
   echo "  │                                        │"
-  echo "  │  Docs: README.md & ARCHITECTURE.md     │"
+  echo "  │  Docs: CLAUDE.md & ARCHITECTURE.md     │"
   echo "  └────────────────────────────────────────┘"
 else
-  echo "  Setup complete. $LINKED skill(s) registered."
+  echo "  Setup complete."
 fi
 echo ""
