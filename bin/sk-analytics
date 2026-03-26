@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# sk-analytics — Local usage dashboard from JSONL telemetry.
+#
+# Usage:
+#   sk-analytics          # Last 7 days (default)
+#   sk-analytics 30d      # Last 30 days
+#   sk-analytics all      # All time
+#
+# Reads ~/.skill-kit/analytics/skill-usage.jsonl
+# Outputs: skill usage counts, success rate, total duration
+set -euo pipefail
+
+STATE_DIR="${SKILLKIT_STATE_DIR:-$HOME/.skill-kit}"
+JSONL_FILE="$STATE_DIR/analytics/skill-usage.jsonl"
+
+if [ ! -f "$JSONL_FILE" ]; then
+  echo ""
+  echo "  No telemetry data yet."
+  echo "  Enable with: sk-config set telemetry anonymous"
+  echo ""
+  exit 0
+fi
+
+# Parse window argument
+WINDOW="${1:-7d}"
+case "$WINDOW" in
+  all) CUTOFF="1970-01-01" ;;
+  *d)
+    DAYS="${WINDOW%d}"
+    if command -v gdate >/dev/null 2>&1; then
+      CUTOFF=$(gdate -u -d "$DAYS days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)
+    else
+      CUTOFF=$(date -u -v-"${DAYS}d" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "1970-01-01")
+    fi
+    ;;
+  *) echo "Usage: sk-analytics [7d|30d|all]" >&2; exit 1 ;;
+esac
+
+echo ""
+echo "  skill-kit usage ($WINDOW)"
+echo "  ━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+# Skill frequency
+echo "  Top skills:"
+awk -F'"' -v cutoff="$CUTOFF" '
+  /"ts":/ {
+    for(i=1;i<=NF;i++) {
+      if($i=="ts") ts=$(i+2)
+      if($i=="skill") skill=$(i+2)
+      if($i=="outcome") outcome=$(i+2)
+      if($i=="duration_s") { gsub(/[^0-9]/,"",$(i+1)); dur=$(i+1) }
+    }
+    if(ts >= cutoff) {
+      count[skill]++
+      total++
+      if(outcome=="success") success++
+      total_dur += dur
+    }
+  }
+  END {
+    # Sort by count (simple bubble via array)
+    n=0
+    for(s in count) { skills[n]=s; counts[n]=count[s]; n++ }
+    for(i=0;i<n-1;i++) for(j=i+1;j<n;j++) {
+      if(counts[j]>counts[i]) {
+        t=skills[i]; skills[i]=skills[j]; skills[j]=t
+        t=counts[i]; counts[i]=counts[j]; counts[j]=t
+      }
+    }
+    for(i=0;i<n && i<10;i++) printf "    %-20s %d\n", skills[i], counts[i]
+    printf "\n  Total runs:    %d\n", total
+    printf "  Success rate:  %d/%d (%d%%)\n", success, total, (total>0 ? success*100/total : 0)
+    printf "  Total time:    %d min\n", total_dur/60
+  }
+' "$JSONL_FILE"
+
+echo ""

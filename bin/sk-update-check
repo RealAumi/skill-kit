@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# sk-update-check — Periodic version check with snooze backoff.
+#
+# Output (one line, or nothing):
+#   JUST_UPGRADED <old> <new>       — marker found from recent upgrade
+#   UPGRADE_AVAILABLE <old> <new>   — remote VERSION differs from local
+#   (nothing)                       — up to date, snoozed, disabled, or check skipped
+#
+# Design decisions (from gstack):
+# - Cache with TTL: UP_TO_DATE (60 min), UPGRADE_AVAILABLE (720 min)
+# - Snooze backoff: 1st=24h, 2nd=48h, 3rd+=7d
+# - New version resets snooze count
+# - Non-blocking: never fails the skill if check fails
+#
+# Env overrides (for testing):
+#   SKILLKIT_DIR          — override auto-detected root
+#   SKILLKIT_REMOTE_URL   — override remote VERSION URL
+#   SKILLKIT_STATE_DIR    — override ~/.skill-kit state directory
+set -euo pipefail
+
+SKILLKIT_DIR="${SKILLKIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+STATE_DIR="${SKILLKIT_STATE_DIR:-$HOME/.skill-kit}"
+CACHE_FILE="$STATE_DIR/last-update-check"
+MARKER_FILE="$STATE_DIR/just-upgraded-from"
+SNOOZE_FILE="$STATE_DIR/update-snoozed"
+VERSION_FILE="$SKILLKIT_DIR/VERSION"
+
+# ── IMPORTANT: Replace this with YOUR repo's raw VERSION URL ──
+REMOTE_URL="${SKILLKIT_REMOTE_URL:-https://raw.githubusercontent.com/YOUR_USER/skill-kit/main/VERSION}"
+
+mkdir -p "$STATE_DIR"
+
+# ── Force flag (busts cache + snooze for standalone upgrade command)
+if [ "${1:-}" = "--force" ]; then
+  rm -f "$CACHE_FILE"
+  rm -f "$SNOOZE_FILE"
+fi
+
+# ── Step 0: Check if updates are disabled
+_UC=$("$SKILLKIT_DIR/bin/sk-config" get update_check 2>/dev/null || true)
+if [ "$_UC" = "false" ]; then
+  exit 0
+fi
+
+# ── Step 1: Check for just-upgraded marker
+if [ -f "$MARKER_FILE" ]; then
+  OLD_VER=$(cat "$MARKER_FILE")
+  NEW_VER=$(cat "$VERSION_FILE" 2>/dev/null || echo "unknown")
+  rm -f "$MARKER_FILE"
+  echo "JUST_UPGRADED $OLD_VER $NEW_VER"
+  exit 0
+fi
+
+LOCAL_VER=$(cat "$VERSION_FILE" 2>/dev/null || echo "0.0.0")
+
+# ── Step 2: Check cache
+if [ -f "$CACHE_FILE" ]; then
+  CACHED_STATUS=$(head -1 "$CACHE_FILE")
+  CACHED_EPOCH=$(sed -n '2p' "$CACHE_FILE")
+  NOW=$(date +%s)
+  AGE=$(( NOW - ${CACHED_EPOCH:-0} ))
+
+  case "$CACHED_STATUS" in
+    UP_TO_DATE)
+      # Cache valid for 60 minutes
+      [ "$AGE" -lt 3600 ] && exit 0
+      ;;
+    UPGRADE_AVAILABLE*)
+      # Cache valid for 720 minutes (12 hours)
+      if [ "$AGE" -lt 43200 ]; then
+        REMOTE_VER=$(echo "$CACHED_STATUS" | awk '{print $2}')
+        # Check snooze before announcing
+        if [ -f "$SNOOZE_FILE" ]; then
+          SNOOZED_VER=$(awk '{print $1}' "$SNOOZE_FILE")
+          SNOOZE_LEVEL=$(awk '{print $2}' "$SNOOZE_FILE")
+          SNOOZE_EPOCH=$(awk '{print $3}' "$SNOOZE_FILE")
+          # New version resets snooze
+          if [ "$SNOOZED_VER" != "$REMOTE_VER" ]; then
+            rm -f "$SNOOZE_FILE"
+          else
+            # Check if snooze has expired
+            case "${SNOOZE_LEVEL:-1}" in
+              1) SNOOZE_DUR=86400 ;;   # 24h
+              2) SNOOZE_DUR=172800 ;;  # 48h
+              *) SNOOZE_DUR=604800 ;;  # 7d
+            esac
+            SNOOZE_AGE=$(( NOW - ${SNOOZE_EPOCH:-0} ))
+            [ "$SNOOZE_AGE" -lt "$SNOOZE_DUR" ] && exit 0
+          fi
+        fi
+        echo "UPGRADE_AVAILABLE $LOCAL_VER $REMOTE_VER"
+        exit 0
+      fi
+      ;;
+  esac
+fi
+
+# ── Step 3: Fetch remote version (with timeout)
+REMOTE_VER=$(curl -sf --max-time 3 "$REMOTE_URL" 2>/dev/null | tr -d '[:space:]') || exit 0
+
+if [ -z "$REMOTE_VER" ]; then
+  exit 0
+fi
+
+# ── Step 4: Compare and cache
+NOW=$(date +%s)
+if [ "$LOCAL_VER" = "$REMOTE_VER" ]; then
+  printf "UP_TO_DATE\n%s\n" "$NOW" > "$CACHE_FILE"
+else
+  printf "UPGRADE_AVAILABLE %s\n%s\n" "$REMOTE_VER" "$NOW" > "$CACHE_FILE"
+  echo "UPGRADE_AVAILABLE $LOCAL_VER $REMOTE_VER"
+fi

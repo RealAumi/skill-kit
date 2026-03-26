@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# sk-telemetry-log — Append a telemetry event to local JSONL.
+#
+# Data flow:
+#   skill preamble → sk-telemetry-log → skill-usage.jsonl
+#
+# Usage:
+#   sk-telemetry-log --skill qa --duration 142 --outcome success \
+#     --session-id "12345-1710756600"
+#
+# Privacy tiers:
+#   off       — no logging at all (default)
+#   anonymous — log usage, no installation_id
+#   community — full logging with installation_id for trend tracking
+#
+# NOTE: Uses set -uo pipefail (no -e) — telemetry must never exit non-zero
+set -uo pipefail
+
+SKILLKIT_DIR="${SKILLKIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+STATE_DIR="${SKILLKIT_STATE_DIR:-$HOME/.skill-kit}"
+ANALYTICS_DIR="$STATE_DIR/analytics"
+JSONL_FILE="$ANALYTICS_DIR/skill-usage.jsonl"
+CONFIG_CMD="$SKILLKIT_DIR/bin/sk-config"
+VERSION_FILE="$SKILLKIT_DIR/VERSION"
+
+# ── Parse flags ─────────────────────────────────────────────
+SKILL=""
+DURATION=""
+OUTCOME="unknown"
+SESSION_ID=""
+EVENT_TYPE="skill_run"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --skill)       SKILL="$2"; shift 2 ;;
+    --duration)    DURATION="$2"; shift 2 ;;
+    --outcome)     OUTCOME="$2"; shift 2 ;;
+    --session-id)  SESSION_ID="$2"; shift 2 ;;
+    --event-type)  EVENT_TYPE="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+
+# ── Read telemetry tier ─────────────────────────────────────
+TIER="$("$CONFIG_CMD" get telemetry 2>/dev/null || true)"
+
+# Default is off — respect user's choice
+case "${TIER:-off}" in
+  off|"") exit 0 ;;
+  anonymous|community) ;;
+  *) exit 0 ;;
+esac
+
+# ── Build event JSON ────────────────────────────────────────
+mkdir -p "$ANALYTICS_DIR"
+
+VERSION=$(cat "$VERSION_FILE" 2>/dev/null || echo "unknown")
+TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m)
+
+# Installation ID (only for community tier)
+INSTALL_ID=""
+if [ "$TIER" = "community" ]; then
+  ID_FILE="$STATE_DIR/.installation-id"
+  if [ -f "$ID_FILE" ]; then
+    INSTALL_ID=$(cat "$ID_FILE")
+  else
+    INSTALL_ID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "unknown")
+    echo "$INSTALL_ID" > "$ID_FILE"
+  fi
+fi
+
+# Local-only fields (never synced remotely)
+REPO=$(basename "$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null || echo "unknown")
+BRANCH=$(git branch --show-current 2>/dev/null || echo "unknown")
+
+# Append to JSONL (atomic-ish: single echo)
+echo "{\"v\":1,\"ts\":\"$TS\",\"event_type\":\"$EVENT_TYPE\",\"skill\":\"$SKILL\",\"session_id\":\"$SESSION_ID\",\"version\":\"$VERSION\",\"os\":\"$OS\",\"arch\":\"$ARCH\",\"duration_s\":${DURATION:-0},\"outcome\":\"$OUTCOME\",\"installation_id\":\"$INSTALL_ID\",\"_repo\":\"$REPO\",\"_branch\":\"$BRANCH\"}" >> "$JSONL_FILE" 2>/dev/null || true

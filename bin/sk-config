@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# sk-config — Simple YAML key-value config store.
+#
+# Usage:
+#   sk-config get <key>          # Read a config value
+#   sk-config set <key> <value>  # Write a config value
+#   sk-config list               # Show all config
+#
+# Config lives at ~/.skill-kit/config.yaml
+# Format: key: value (one per line, flat structure)
+set -euo pipefail
+
+STATE_DIR="${SKILLKIT_STATE_DIR:-$HOME/.skill-kit}"
+CONFIG_FILE="$STATE_DIR/config.yaml"
+
+mkdir -p "$STATE_DIR"
+[ -f "$CONFIG_FILE" ] || touch "$CONFIG_FILE"
+
+case "${1:-}" in
+  get)
+    [ -z "${2:-}" ] && echo "Usage: sk-config get <key>" >&2 && exit 1
+    grep "^${2}:" "$CONFIG_FILE" 2>/dev/null | sed "s/^${2}: *//" | head -1
+    ;;
+  set)
+    [ -z "${2:-}" ] || [ -z "${3:-}" ] && echo "Usage: sk-config set <key> <value>" >&2 && exit 1
+    KEY="$2"
+    VALUE="$3"
+    if grep -q "^${KEY}:" "$CONFIG_FILE" 2>/dev/null; then
+      # Update existing key (portable sed -i)
+      TMP=$(mktemp)
+      sed "s|^${KEY}:.*|${KEY}: ${VALUE}|" "$CONFIG_FILE" > "$TMP"
+      mv "$TMP" "$CONFIG_FILE"
+    else
+      echo "${KEY}: ${VALUE}" >> "$CONFIG_FILE"
+    fi
+    ;;
+  list)
+    cat "$CONFIG_FILE"
+    ;;
+  *)
+    echo "Usage: sk-config {get|set|list} [key] [value]" >&2
+    exit 1
+    ;;
+esac
