@@ -1,5 +1,7 @@
 # skill-kit
 
+[中文文档](README.zh-CN.md)
+
 A forkable template for building Claude Code skill frameworks.
 
 Extracted from studying [gstack](https://github.com/garrytan/gstack) (49k+ stars), this template gives you the infrastructure patterns — template pipeline, auto-update, telemetry, testing — without the domain-specific skills. Fork it, delete the examples, add your own.
