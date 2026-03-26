@@ -1,12 +1,16 @@
 # skill-kit
 
-A framework for building Claude Code skills. Fork this repo to create your own skill collection.
+A framework for building Claude Code and Codex skills. Fork this repo to create your own skill collection.
 
 ## Project structure
 
 ```
 skill-kit/
-├── setup                       # Installer (symlinks skills for Claude discovery)
+├── setup                       # Installer (Claude symlinks + Codex runtime root)
+├── .agents/skills/             # Generated Codex artifacts
+│   ├── hello/SKILL.md
+│   ├── review-lite/SKILL.md
+│   └── upgrade/SKILL.md
 ├── scripts/
 │   ├── gen-skill-docs.ts       # Template → SKILL.md generator
 │   ├── discover-skills.ts      # Find SKILL.md.tmpl files
@@ -17,13 +21,16 @@ skill-kit/
 │       └── preamble.ts         # Shared preamble generator
 ├── bin/                        # CLI utilities
 │   ├── sk-config               # YAML config read/write
+│   ├── sk-upgrade              # Upgrade helper (git or vendored installs)
 │   ├── sk-update-check         # Version comparison + snooze
 │   ├── sk-telemetry-log        # Local JSONL event logging
 │   └── sk-analytics            # Usage dashboard
 ├── skills/                     # Skill definitions
 │   ├── hello/SKILL.md.tmpl     # Minimal example
-│   └── review-lite/SKILL.md.tmpl # Code review example
+│   ├── review-lite/SKILL.md.tmpl # Code review example
+│   └── upgrade/SKILL.md.tmpl   # Upgrade skill wrapper
 └── test/
+    ├── cli-behavior.test.ts
     └── skill-validation.test.ts
 ```
 
@@ -33,6 +40,7 @@ skill-kit/
 ./setup                          # Install skills (create symlinks)
 bun run gen:skill-docs           # Regenerate SKILL.md from templates
 bun run gen:skill-docs:dry       # Check freshness (CI mode)
+bin/sk-upgrade                   # Upgrade to the latest version
 bun run skill:check              # Health dashboard
 bun test                         # Run all tests
 bin/sk-analytics                 # Usage dashboard
@@ -44,10 +52,12 @@ bin/sk-analytics                 # Usage dashboard
 2. Add frontmatter (name, description, allowed-tools)
 3. Use `{{PREAMBLE}}` for shared startup logic
 4. Run `./setup` to generate and register
+5. Run `bun run gen:skill-docs:codex` if you need the Codex artifacts only
 
 ## Conventions
 
 - **SKILL.md** is generated — edit **SKILL.md.tmpl** instead
+- Codex artifacts are generated into `.agents/skills/` and are separate from Claude `skills/*/SKILL.md`
 - Shared logic goes in resolvers (`scripts/resolvers/`)
 - CLI tools use `sk-` prefix
 - State lives in `~/.skill-kit/`
@@ -57,3 +67,4 @@ bin/sk-analytics                 # Usage dashboard
 
 - `/hello` — minimal example skill
 - `/review-lite` — lightweight pre-commit code review
+- `/upgrade` — wrapper around `bin/sk-upgrade`

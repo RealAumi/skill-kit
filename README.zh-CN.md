@@ -253,7 +253,7 @@ export const RESOLVERS = { ...existing, QA_METHODOLOGY: generateQAMethodology };
 
 ```
 skill-kit/
-├── setup                        # 安装脚本
+├── setup                        # 安装脚本（符号链接 + Codex sidecar）
 ├── VERSION                      # 语义版本号（更新系统使用）
 ├── CLAUDE.md                    # AI 指令
 ├── ARCHITECTURE.md              # 设计决策
@@ -269,19 +269,25 @@ skill-kit/
 │
 ├── bin/                         # Shell 工具
 │   ├── sk-config                # YAML 配置（get/set/list）
-│   ├── sk-update-check          # 版本检查 + 延迟提醒
-│   ├── sk-telemetry-log         # JSONL 事件记录
+│   ├── sk-update-check          # 版本检查 + 延迟提醒（自动检测远程地址）
+│   ├── sk-upgrade               # 自更新（git + vendored 安装）
+│   ├── sk-telemetry-log         # JSONL 事件记录（pending marker）
+│   ├── sk-telemetry-sync        # 后台推送到远程端点
 │   └── sk-analytics             # 使用统计仪表盘
 │
 ├── skills/                      # 你的 skill 放这里
 │   ├── hello/SKILL.md.tmpl      # 最简示例
-│   └── review-lite/SKILL.md.tmpl # 代码审查示例
+│   ├── review-lite/SKILL.md.tmpl # 代码审查示例
+│   └── upgrade/SKILL.md.tmpl   # 自更新 skill
+│
+├── .agents/skills/              # 生成的 Codex 产物（与 Claude 隔离）
 │
 ├── test/
-│   └── skill-validation.test.ts # 静态校验
+│   ├── skill-validation.test.ts # 静态校验 + 新鲜度检查
+│   └── cli-behavior.test.ts     # CLI 工具测试（config、update-check）
 │
 └── .github/workflows/
-    └── skill-docs.yml           # CI 新鲜度检查
+    └── skill-docs.yml           # CI 新鲜度检查（双宿主）
 ```
 
 ## 设计模式（提炼自 gstack）

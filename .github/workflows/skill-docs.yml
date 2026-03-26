@@ -21,6 +21,9 @@ jobs:
       - name: Check SKILL.md freshness
         run: bun run gen:skill-docs:dry
 
+      - name: Check Codex SKILL.md freshness
+        run: bun run gen:skill-docs:dry:codex
+
       - name: Validate skills
         run: bun run skill:check
 

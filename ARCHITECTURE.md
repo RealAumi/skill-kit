@@ -20,7 +20,8 @@ SKILL.md.tmpl (human-written prose + {{PLACEHOLDERS}})
     ↓
 gen-skill-docs.ts (reads templates, runs resolvers)
     ↓
-SKILL.md (ready for Claude Code to load)
+Claude: skills/<name>/SKILL.md
+Codex: .agents/skills/<name>/SKILL.md
 ```
 
 ### Why two files?
@@ -68,6 +69,8 @@ const HOST_PATHS: Record<Host, HostPaths> = {
 
 Run `./setup --host codex` to generate Codex-compatible skills.
 
+Codex uses isolated generated artifacts under `.agents/skills/` so it never overwrites the Claude-facing `skills/*/SKILL.md` files. The setup script then creates a minimal runtime root at `~/.codex/skills/skill-kit/` with symlinks to `bin/`, `VERSION`, and the upgrade skill. Codex loads the generated skills from `.agents/skills/*`, while the runtime root gives those skills a stable place to find framework utilities.
+
 ## Skill discovery
 
 Claude Code discovers skills via **symlinks**:
@@ -85,6 +88,19 @@ Benefits:
 - **Easy cleanup.** Remove links to unregister.
 
 The `setup` script creates these symlinks automatically.
+
+Codex uses a different shape:
+
+```
+repo/.agents/skills/
+├── hello/SKILL.md
+├── review-lite/SKILL.md
+├── upgrade/SKILL.md
+└── skill-kit/          (runtime sidecar, created by setup)
+    ├── bin -> /path/to/repo/bin
+    ├── VERSION -> /path/to/repo/VERSION
+    └── upgrade/SKILL.md -> /path/to/repo/.agents/skills/upgrade/SKILL.md
+```
 
 ## Update mechanism
 
@@ -104,6 +120,8 @@ Snooze backoff prevents nagging:
 - 3rd+ decline: 7 days
 - New version resets snooze
 
+`sk-upgrade` is the concrete upgrade path. It detects whether the install is a git checkout or a vendored copy, updates from the recorded origin, reruns `./setup`, writes the `just-upgraded-from` marker, and shows the relevant changelog section (or recent commits if no changelog exists).
+
 ## Telemetry
 
 Three tiers, user chooses:
@@ -118,12 +136,14 @@ Three tiers, user chooses:
 
 Data flow:
 ```
-skill run → sk-telemetry-log → ~/.skill-kit/analytics/skill-usage.jsonl
-                                       ↓
-                               sk-analytics (local dashboard)
+skill preamble → .pending-<session> marker
+                                ↓
+skill epilogue → sk-telemetry-log → ~/.skill-kit/analytics/skill-usage.jsonl
+                                                ↓
+                                        sk-analytics (local dashboard)
 ```
 
-The JSONL file is append-only, human-readable, and stays on disk. `sk-analytics` parses it into a usage dashboard.
+The JSONL file is append-only, human-readable, and stays on disk. `sk-analytics` parses it into a usage dashboard. Pending markers let the next healthy session record interrupted runs instead of dropping them on crash.
 
 ## Config system
 
@@ -147,7 +167,7 @@ Three tiers (inspired by gstack):
 | 2: Freshness | Regenerate → diff against committed | Free | <5s |
 | 3: E2E | Spawn real Claude session, run skill (future) | ~$4 | ~20min |
 
-Tier 1+2 run on every `bun test` and in CI. Tier 3 is opt-in for comprehensive validation.
+Tier 1+2 run on every `bun test` and in CI for both Claude and Codex artifacts. Tier 3 is opt-in for comprehensive validation.
 
 ## Design principles
 

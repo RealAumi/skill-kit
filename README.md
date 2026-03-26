@@ -255,7 +255,7 @@ The framework already supports `--host codex`. Codex-specific paths are defined 
 
 ```
 skill-kit/
-├── setup                        # Installer
+├── setup                        # Installer (symlinks + Codex sidecar)
 ├── VERSION                      # Semantic version (checked by update system)
 ├── CLAUDE.md                    # AI instructions
 ├── ARCHITECTURE.md              # Design decisions
@@ -271,19 +271,25 @@ skill-kit/
 │
 ├── bin/                         # Shell utilities
 │   ├── sk-config                # YAML config (get/set/list)
-│   ├── sk-update-check          # Version check + snooze
-│   ├── sk-telemetry-log         # JSONL event logging
+│   ├── sk-update-check          # Version check + snooze (auto-detects remote)
+│   ├── sk-upgrade               # Self-update (git + vendored installs)
+│   ├── sk-telemetry-log         # JSONL event logging (pending markers)
+│   ├── sk-telemetry-sync        # Background push to remote endpoint
 │   └── sk-analytics             # Usage dashboard
 │
 ├── skills/                      # Your skills go here
 │   ├── hello/SKILL.md.tmpl      # Minimal example
-│   └── review-lite/SKILL.md.tmpl # Review example
+│   ├── review-lite/SKILL.md.tmpl # Review example
+│   └── upgrade/SKILL.md.tmpl   # Self-upgrade skill
+│
+├── .agents/skills/              # Generated Codex artifacts (isolated from Claude)
 │
 ├── test/
-│   └── skill-validation.test.ts # Static validation
+│   ├── skill-validation.test.ts # Static validation + freshness
+│   └── cli-behavior.test.ts     # CLI tool tests (config, update-check)
 │
 └── .github/workflows/
-    └── skill-docs.yml           # CI freshness check
+    └── skill-docs.yml           # CI freshness check (both hosts)
 ```
 
 ## Design patterns (from gstack)

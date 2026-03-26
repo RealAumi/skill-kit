@@ -48,17 +48,32 @@ describe('SKILL.md validation', () => {
 });
 
 describe('template freshness', () => {
-  test('generated SKILL.md files match templates', async () => {
-    // Run gen-skill-docs in dry-run mode
-    const proc = Bun.spawn(['bun', 'run', 'scripts/gen-skill-docs.ts', '--dry-run'], {
-      cwd: ROOT,
-      stdout: 'pipe',
-      stderr: 'pipe',
+  for (const [label, args] of [
+    ['claude', ['bun', 'run', 'scripts/gen-skill-docs.ts', '--dry-run']],
+    ['codex', ['bun', 'run', 'scripts/gen-skill-docs.ts', '--host', 'codex', '--dry-run']],
+  ] as const) {
+    test(`${label} artifacts match templates`, async () => {
+      const proc = Bun.spawn(args, {
+        cwd: ROOT,
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      const exitCode = await proc.exited;
+      if (exitCode !== 0) {
+        const stderr = await new Response(proc.stderr).text();
+        throw new Error(`${label} SKILL.md files are stale.\n${stderr}`);
+      }
     });
-    const exitCode = await proc.exited;
-    if (exitCode !== 0) {
-      const stderr = await new Response(proc.stderr).text();
-      throw new Error(`SKILL.md files are stale. Run: bun run gen:skill-docs\n${stderr}`);
-    }
+  }
+});
+
+describe('codex artifacts', () => {
+  test('Codex output lives under .agents/skills without overwriting Claude output', () => {
+    const claudeHello = fs.readFileSync(path.join(ROOT, 'skills/hello/SKILL.md'), 'utf-8');
+    const codexHello = fs.readFileSync(path.join(ROOT, '.agents/skills/hello/SKILL.md'), 'utf-8');
+
+    expect(codexHello).toContain('SKILLKIT_ROOT="$HOME/.codex/skills/skill-kit"');
+    expect(codexHello).toContain('.agents/skills/skill-kit');
+    expect(claudeHello).not.toContain('SKILLKIT_ROOT="$HOME/.codex/skills/skill-kit"');
   });
 });
